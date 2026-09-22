@@ -14,7 +14,19 @@ jobs:
       - name: Login to Railway
         run: railway login
 
+      - name: Generate SSH key
+        run: |
+          mkdir -p ~/.ssh
+          ssh-keygen -t ed25519 -f ~/.ssh/railway -N "" -C "github-actions"
+          echo ""
+          echo "=== PUBLIC KEY — Add this to Railway dashboard > Settings > SSH Keys ==="
+          cat ~/.ssh/railway.pub
+          echo "======================================================================"
+          echo ""
+          echo "(The action will continue once you've added the key — or skip if already added)"
+
       - name: SSH into Railway service
+        timeout-minutes: 10
         run: |
           railway ssh \
             --project=15ff7ab8-7e2c-4d12-b6fc-ff12ea4cf563 \
