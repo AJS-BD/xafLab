@@ -8,17 +8,5 @@ jobs:
   railway-ssh:
     runs-on: ubuntu-latest
     steps:
-      - name: Install Railway CLI
-        run: npm i -g @railway/cli
-
-      - name: Login to Railway
-        run: railway login
-
-      - name: Generate SSH key
-        run: |
-          mkdir -p ~/.ssh
-          ssh-keygen -t ed25519 -f ~/.ssh/railway -N "" -C "github-actions"
-          echo ""
-          echo "=== PUBLIC KEY — Add this to Railway dashboard > Settings > SSH Keys ==="
-          cat ~/.ssh/railway.pub
-          echo "========================================================="
+      - name: Run Ssh
+        run: ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIJ2emmC9AdUc/rEslh8wA86phiIjcMWPqCnqPA8w2XEB github-actions
