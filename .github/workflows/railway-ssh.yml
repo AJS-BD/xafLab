@@ -1,0 +1,22 @@
+# .github/workflows/railway-ssh.yml
+
+name: Railway SSH
+
+on: [workflow_dispatch]
+
+jobs:
+  railway-ssh:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Install Railway CLI
+        run: npm i -g @railway/cli
+
+      - name: Login to Railway
+        run: railway login
+
+      - name: SSH into Railway service
+        run: |
+          railway ssh \
+            --project=15ff7ab8-7e2c-4d12-b6fc-ff12ea4cf563 \
+            --environment=22903ceb-50b2-41f9-9229-182c67005b8a \
+            --service=5379595c-7ced-4db5-be3d-ac5c07aec0b5
