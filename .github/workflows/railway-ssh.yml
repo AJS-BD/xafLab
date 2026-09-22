@@ -8,8 +8,10 @@
 #   2. Open the run's log. The login step prints a link like
 #      https://railway.com/activate?user_code=XXXX-XXXX and waits up to 9 min.
 #      Tap it, approve, come back — the job continues by itself.
-#   3. The job registers a fresh SSH key with Railway, runs your commands
-#      inside the container, prints the output, then removes the key.
+#   3. The job validates the project/environment/service IDs (falls back to
+#      the "production" environment and the first service if an ID is wrong),
+#      registers a fresh SSH key with Railway, runs your commands inside the
+#      container, prints the output, then removes the key.
 #
 # For fully-unattended runs (no login tap), see the RAILWAY_API_TOKEN note
 # at the bottom of this file.
@@ -35,17 +37,67 @@ jobs:
     timeout-minutes: 15
     steps:
       - name: Install Railway CLI
-        run: npm i -g @railway/cli
+        run: npm i -g @railway/cli@5
 
       - name: Login to Railway (tap the link in this log)
         timeout-minutes: 9
         run: railway login --browserless
 
+      - name: Resolve project targets (validate IDs)
+        timeout-minutes: 2
+        run: |
+          PROJECT_ID="15ff7ab8-7e2c-4d12-b6fc-ff12ea4cf563"
+          ENV_ID="22903ceb-50b2-41f9-9229-182c67005b8a"
+          SERVICE_ID="5379595c-7ced-4db5-be3d-ac5c07aec0b5"
+
+          # Validate project + environment. If the hardcoded environment UUID
+          # is wrong, retry with the environment NAME "production".
+          STATUS="$(railway status --project="$PROJECT_ID" --environment="$ENV_ID" --json)" || {
+            echo "Environment UUID $ENV_ID failed — retrying with name 'production'"
+            STATUS="$(railway status --project="$PROJECT_ID" --environment=production --json)" || {
+              echo "::error::Project $PROJECT_ID is not reachable. Your Railway projects:"
+              railway list || true
+              exit 1
+            }
+          }
+
+          # Confirm the service UUID exists in this project; if not, use the
+          # first service. (Defensive: on any parse failure keep the hardcoded ID.)
+          RESOLVED_SERVICE="$(echo "$STATUS" | jq -r --arg sid "$SERVICE_ID" \
+            'first(.services.edges[].node.id | select(. == $sid)) // .services.edges[0].node.id // empty' 2>/dev/null || true)"
+          if [ -n "$RESOLVED_SERVICE" ] && [ "$RESOLVED_SERVICE" != "$SERVICE_ID" ]; then
+            echo "NOTE: service $SERVICE_ID not found in project — using $RESOLVED_SERVICE instead"
+            SERVICE_ID="$RESOLVED_SERVICE"
+          fi
+
+          RESOLVED_ENV="$(echo "$STATUS" | jq -r '.environments.edges[0].node.id // empty' 2>/dev/null || true)"
+          [ -n "$RESOLVED_ENV" ] && ENV_ID="$RESOLVED_ENV"
+          ENV_NAME="$(echo "$STATUS" | jq -r '.environments.edges[0].node.name // "unknown"' 2>/dev/null || true)"
+
+          echo "Project:     $PROJECT_ID"
+          echo "Environment: $ENV_NAME ($ENV_ID)"
+          echo "Service:     $SERVICE_ID"
+          {
+            echo "RAILWAY_PROJECT_ID=$PROJECT_ID"
+            echo "RAILWAY_ENV_ID=$ENV_ID"
+            echo "RAILWAY_SERVICE_ID=$SERVICE_ID"
+          } >> "$GITHUB_ENV"
+
       - name: Generate SSH key
         run: |
           mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
           ssh-keygen -t ed25519 -f ~/.ssh/railway -N "" -C github-actions
           echo "KEY_NAME=gha-$(date +%s)" >> "$GITHUB_ENV"
+
+      - name: Trust Railway SSH relay host key
+        # Fresh runners have no known_hosts entry for ssh.railway.com and no
+        # TTY, so the first-contact host-key prompt would kill the connection.
+        # accept-new auto-trusts on first contact (same setting the Railway
+        # CLI itself writes for its own SSH config blocks).
+        run: |
+          printf 'Host ssh.railway.com\n    StrictHostKeyChecking accept-new\n' > ~/.ssh/config
+          chmod 600 ~/.ssh/config
 
       - name: Register key with Railway
         run: railway ssh keys add --key ~/.ssh/railway.pub --name "$KEY_NAME"
@@ -58,20 +110,23 @@ jobs:
           if [ -n "$SSH_COMMANDS" ]; then
             CMD="$SSH_COMMANDS"
           else
-            CMD='echo "=== Connected ==="; pwd; ps aux | head -20; df -h / | tail -1'
+            CMD='echo "=== Connected ==="; pwd; ls -la; head -2 /etc/os-release; df -h / | tail -1'
           fi
+          # sh (not bash): slim/alpine containers may not ship bash.
           railway ssh \
-            --project=15ff7ab8-7e2c-4d12-b6fc-ff12ea4cf563 \
-            --environment=22903ceb-50b2-41f9-9229-182c67005b8a \
-            --service=5379595c-7ced-4db5-be3d-ac5c07aec0b5 \
+            --project="$RAILWAY_PROJECT_ID" \
+            --environment="$RAILWAY_ENV_ID" \
+            --service="$RAILWAY_SERVICE_ID" \
             -i ~/.ssh/railway \
-            -- bash -lc "$CMD"
+            -- sh -lc "$CMD"
 
       - name: Remove key from Railway (cleanup)
         if: always()
         run: |
-          railway ssh keys remove "$KEY_NAME" || \
-            echo "NOTE: key '$KEY_NAME' may still be registered — remove it later if 2FA blocked auto-cleanup."
+          if [ -n "${KEY_NAME:-}" ]; then
+            railway ssh keys remove "$KEY_NAME" || \
+              echo "NOTE: key '$KEY_NAME' may still be registered — remove it later if 2FA blocked auto-cleanup."
+          fi
 
 # UNATTENDED MODE (optional, no login tap needed):
 #   1. Railway dashboard -> Account Settings -> Tokens -> create a WORKSPACE-scoped
