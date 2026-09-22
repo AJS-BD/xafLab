@@ -1,12 +1,83 @@
 # .github/workflows/railway-ssh.yml
+#
+# SSH into the Railway service from your phone.
+#
+# HOW IT WORKS (one tap per run):
+#   1. Actions tab -> Railway SSH -> Run workflow (optionally type commands
+#      in the "Commands to run" box).
+#   2. Open the run's log. The login step prints a link like
+#      https://railway.com/activate?user_code=XXXX-XXXX and waits up to 9 min.
+#      Tap it, approve, come back — the job continues by itself.
+#   3. The job registers a fresh SSH key with Railway, runs your commands
+#      inside the container, prints the output, then removes the key.
+#
+# For fully-unattended runs (no login tap), see the RAILWAY_API_TOKEN note
+# at the bottom of this file.
 
 name: Railway SSH
 
-on: [workflow_dispatch]
+on:
+  workflow_dispatch:
+    inputs:
+      commands:
+        description: "Commands to run in the container (empty = status listing)"
+        required: false
+        default: ""
+        type: string
+
+concurrency:
+  group: railway-ssh
+  cancel-in-progress: true
 
 jobs:
   railway-ssh:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
-      - name: Run Ssh
-        run: ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIJ2emmC9AdUc/rEslh8wA86phiIjcMWPqCnqPA8w2XEB github-actions
+      - name: Install Railway CLI
+        run: npm i -g @railway/cli
+
+      - name: Login to Railway (tap the link in this log)
+        timeout-minutes: 9
+        run: railway login --browserless
+
+      - name: Generate SSH key
+        run: |
+          mkdir -p ~/.ssh
+          ssh-keygen -t ed25519 -f ~/.ssh/railway -N "" -C github-actions
+          echo "KEY_NAME=gha-$(date +%s)" >> "$GITHUB_ENV"
+
+      - name: Register key with Railway
+        run: railway ssh keys add --key ~/.ssh/railway.pub --name "$KEY_NAME"
+
+      - name: SSH into Railway service
+        timeout-minutes: 5
+        env:
+          SSH_COMMANDS: ${{ inputs.commands }}
+        run: |
+          if [ -n "$SSH_COMMANDS" ]; then
+            CMD="$SSH_COMMANDS"
+          else
+            CMD='echo "=== Connected ==="; pwd; ps aux | head -20; df -h / | tail -1'
+          fi
+          railway ssh \
+            --project=15ff7ab8-7e2c-4d12-b6fc-ff12ea4cf563 \
+            --environment=22903ceb-50b2-41f9-9229-182c67005b8a \
+            --service=5379595c-7ced-4db5-be3d-ac5c07aec0b5 \
+            -i ~/.ssh/railway \
+            -- bash -lc "$CMD"
+
+      - name: Remove key from Railway (cleanup)
+        if: always()
+        run: |
+          railway ssh keys remove "$KEY_NAME" || \
+            echo "NOTE: key '$KEY_NAME' may still be registered — remove it later if 2FA blocked auto-cleanup."
+
+# UNATTENDED MODE (optional, no login tap needed):
+#   1. Railway dashboard -> Account Settings -> Tokens -> create a WORKSPACE-scoped
+#      API token (NOT a project token — project tokens cannot manage SSH keys).
+#   2. Add it as a repo secret named RAILWAY_API_TOKEN.
+#   3. Delete the "Login to Railway" step above and add to every railway step:
+#        env:
+#          RAILWAY_API_TOKEN: ${{ secrets.RAILWAY_API_TOKEN }}
+#   The CLI auto-authenticates from that env var.
