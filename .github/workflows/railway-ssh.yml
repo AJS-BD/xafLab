@@ -88,7 +88,12 @@ jobs:
           mkdir -p ~/.ssh
           chmod 700 ~/.ssh
           ssh-keygen -t ed25519 -f ~/.ssh/railway -N "" -C github-actions
-          echo "KEY_NAME=gha-$(date +%s)" >> "$GITHUB_ENV"
+          # 'keys remove' needs a key ID or FINGERPRINT (not the name) in
+          # non-interactive mode — compute it now for the cleanup step.
+          FINGERPRINT="$(ssh-keygen -lf ~/.ssh/railway.pub)"
+          FINGERPRINT="${FINGERPRINT#*SHA256:}"   # drop "256 SHA256:" prefix
+          FINGERPRINT="${FINGERPRINT%% *}"        # keep hash, drop trailing comment
+          echo "KEY_FINGERPRINT=$FINGERPRINT" >> "$GITHUB_ENV"
 
       - name: Trust Railway SSH relay host key
         # Fresh runners have no known_hosts entry for ssh.railway.com and no
@@ -100,7 +105,7 @@ jobs:
           chmod 600 ~/.ssh/config
 
       - name: Register key with Railway
-        run: railway ssh keys add --key ~/.ssh/railway.pub --name "$KEY_NAME"
+        run: railway ssh keys add --key ~/.ssh/railway.pub --name "gha-$(date +%s)"
 
       - name: SSH into Railway service
         timeout-minutes: 5
@@ -123,9 +128,9 @@ jobs:
       - name: Remove key from Railway (cleanup)
         if: always()
         run: |
-          if [ -n "${KEY_NAME:-}" ]; then
-            railway ssh keys remove "$KEY_NAME" || \
-              echo "NOTE: key '$KEY_NAME' may still be registered — remove it later if 2FA blocked auto-cleanup."
+          if [ -n "${KEY_FINGERPRINT:-}" ]; then
+            railway ssh keys remove "$KEY_FINGERPRINT" || \
+              echo "NOTE: key fingerprint $KEY_FINGERPRINT may still be registered — remove it later if 2FA blocked auto-cleanup."
           fi
 
 # UNATTENDED MODE (optional, no login tap needed):
